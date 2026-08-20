@@ -1,0 +1,315 @@
+// ======================================================================
+// DIN + DCN 模型结构（卡片流 CTR · 生产级）– v4
+// 参照生产级 DCN 模板，din_pooling 替代 din 模块实现 DIN 注意力
+// ======================================================================
+
+local model_structure = [
+  // --------------------------------------------------------------------
+  // 1. 离散特征 Embedding
+  // --------------------------------------------------------------------
+  {
+    name: 'input',
+    type: 'feature_embedding',
+    parameters: {
+      methods: {
+        'features#discrete': {
+          type: 'embedding',
+          mask_zero: true,
+          output_dim: 16,
+        },
+      },
+    },
+    inputs: {
+      inputs: "ref::inputs.`features#discrete`",
+    },
+    outputs: 'embedding',
+  },
+
+  // --------------------------------------------------------------------
+  // 2. 连续特征拼接
+  // --------------------------------------------------------------------
+  {
+    name: 'concat_dense',
+    type: 'concatenate',
+    inputs: {
+      inputs: "ref::values(inputs.`features#continuous`)",
+    },
+    outputs: 'embedding',
+  },
+
+  // --------------------------------------------------------------------
+  // 3. 非 DIN 离散特征处理（排除18个序列特征，它们走 din_pooling）
+  // --------------------------------------------------------------------
+  {
+    name: 'postprocess',
+    type: 'feature_sequential',
+    parameters: {
+      methods: {
+        'features#multiple_discrete': [{ type: 'average', axis: 1 }],
+        'features#single_discrete': [{ type: 'max', axis: 1 }],
+      },
+    },
+    inputs: {
+      inputs: "ref::input.embedding.`name not in ['last_15d_all_card_open_history', 'recently_used_1_all_card', 'recently_used_3_all_card', 'recently_used_5_all_card', 'recently_used_7_all_card', 'recently_collect_1_all_card', 'recently_collect_3_all_card', 'recently_collect_5_all_card', 'recently_collect_7_all_card', 'last_15d_all_card_supplier_open_history', 'recent_used_1_all_card_supplier', 'recent_used_3_all_card_supplier', 'recent_used_5_all_card_supplier', 'recent_used_7_all_card_supplier', 'recent_collect_1_all_card_supplier', 'recent_collect_3_all_card_supplier', 'recent_collect_5_all_card_supplier', 'recent_collect_7_all_card_supplier']`",
+    },
+    outputs: 'embedding',
+  },
+
+  // --------------------------------------------------------------------
+  // 4. DIN 注意力（loop + din_pooling）
+  //    content_id 已是 (batch, 1, 16) 3D，无需 expand_dims
+  // --------------------------------------------------------------------
+  {
+    name: 'din',
+    type: 'loop',
+    parameters: {
+      loop: {
+        type: 'din_pooling',
+        pooling_config: {
+          style: 'attn',
+          embed_dim: 64,
+        }
+      }
+    },
+    inputs: {
+      inputs: [
+        ["ref::values(input.embedding.`name=='last_15d_all_card_open_history'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_used_1_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_used_3_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_used_5_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_used_7_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_collect_1_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_collect_3_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_collect_5_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recently_collect_7_all_card'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='last_15d_all_card_supplier_open_history'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_used_1_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_used_3_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_used_5_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_used_7_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_collect_1_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_collect_3_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_collect_5_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"],
+        ["ref::values(input.embedding.`name=='recent_collect_7_all_card_supplier'`)[0]", "ref::values(input.embedding.`name=='content_id'`)[0]"]
+      ]
+    },
+    outputs: 'embedding'
+  },
+
+  // --------------------------------------------------------------------
+  // 5. 拼接离散特征
+  // --------------------------------------------------------------------
+  {
+    name: 'concat_discrete',
+    type: 'concatenate',
+    inputs: {
+      inputs: 'ref::values(postprocess.embedding)',
+    },
+    outputs: 'embedding',
+  },
+
+  // --------------------------------------------------------------------
+  // 6. 拼接 DIN 输出
+  // --------------------------------------------------------------------
+  {
+    name: 'concat_din',
+    type: 'concatenate',
+    inputs: {
+      inputs: 'ref::din.embedding',
+    },
+    outputs: 'embedding',
+  },
+  {
+    name: 'squeeze_din',
+    type: 'squeeze',
+    inputs: { input: "ref::concat_din.embedding", axis: 1 },
+    outputs: 'embedding',
+  },
+
+  // --------------------------------------------------------------------
+  // 7. 多分支拼接
+  // --------------------------------------------------------------------
+  {
+    name: 'concat_all',
+    type: 'concatenate',
+    inputs: {
+      inputs: ['ref::concat_discrete.embedding', 'ref::squeeze_din.embedding', 'ref::concat_dense.embedding'],
+    },
+    outputs: 'embedding',
+  },
+
+  // --------------------------------------------------------------------
+  // 8. Cross Network
+  // --------------------------------------------------------------------
+  {
+    name: 'cross_net',
+    type: 'cross',
+    parameters: { num_layers: 3 },
+    inputs: { inputs: 'ref::concat_all.embedding' },
+    outputs: 'output',
+  },
+
+  // --------------------------------------------------------------------
+  // 9. DNN（parallel 分支）
+  // --------------------------------------------------------------------
+  {
+    name: 'dnn_after_cross',
+    type: 'dnn',
+    parameters: {
+      hidden_dims: [512, 256, 128],
+      hidden_activation: ['relu', 'relu'],
+      output_activation: 'relu',
+      dropout_rate: [0.15, 0.1],
+      norm: [null, null],
+      orders: ['adn', 'adn'],
+      kernel_initializer: 'he_normal',
+    },
+    inputs: { inputs: 'ref::concat_all.embedding' },
+    outputs: 'output',
+  },
+
+  // --------------------------------------------------------------------
+  // 10. 输出层
+  // --------------------------------------------------------------------
+  {
+    name: 'concat_output',
+    type: 'concatenate',
+    inputs: { inputs: ['ref::cross_net.output', 'ref::dnn_after_cross.output'] },
+    outputs: 'output',
+  },
+  {
+    name: 'linear',
+    type: 'dense',
+    parameters: {
+      units: 1,
+      activation: 'sigmoid',
+    },
+    inputs: {
+      inputs: 'ref::concat_output.output'
+    },
+    outputs: 'logit',
+  },
+];
+
+// ======================================================================
+// 模型定义
+// ======================================================================
+local din_dcn_model = {
+  name: 'din_dcn_card_ctr_v1',
+  structure: model_structure,
+  inputs: 'inputs',
+  outputs: {
+    label: 'ref::linear.logit',
+  }
+};
+
+// ======================================================================
+// 训练配置
+// ======================================================================
+local trainer_config = {
+  type: 'gradient_descent',
+  gpu_id: '0,1',
+  epoch: 5,
+  seed: 123,
+  optimizer: {
+    type: 'adam',
+    lr: 0.002,
+    clipnorm: 5,
+  },
+  callbacks: [
+    { type: 'n_batch_logger', interval: 100 },
+    {
+      type: "early_stopping",
+      patience: 2,
+      monitor: "val_auc",
+      restore_best_weights: true,
+      mode: "max",
+    },
+  ],
+  compile_config: {
+    label: {
+      loss: { type: 'binary_cross_entropy', weight: 1.0 },
+      metrics: [{ type: 'auc' }],
+    },
+  },
+};
+
+// ======================================================================
+// 数据集配置
+// ======================================================================
+local dataset_config = {
+  type: 'tensorflow::tfrecord',
+  data_path: '$data_dir/$scenName/$modelID/data/$date',
+  stats_file: "$data_dir/$scenName/$modelID/config/$date/modelTrain.json",
+  prefetch_size: 2,
+  batch_size: 10240,
+  shuffle_buffer_size: 20480,
+  compression_type: 'GZIP',
+};
+
+// ======================================================================
+// Pipeline
+// ======================================================================
+{
+  name: 'din_dcn_card_ctr_train',
+  tasks: [
+    {
+      name: 'gen_wiseRec_config',
+      type: 'gen_config',
+      parameters: {
+        label_cols: ['label'],
+        feature_map_path: '$data_dir/$scenName/$modelID/config/$date/$date_adrcm3-$scenName-feature-map.json',
+      },
+    },
+    {
+      name: 'load_dataset',
+      type: 'tensorflow::load_train_valid_test_dataset',
+      parameters: {
+        feature_config_path: '$data_dir/$scenName/$modelID/config/$date/WiseRec/feature_config.json',
+        feature_map_path: '$data_dir/$scenName/$modelID/config/$date/WiseRec/feature_map.json',
+        dataset_config: dataset_config,
+      },
+      outputs: ['train', 'valid', 'test']
+    },
+    {
+      name: 'train_model',
+      type: 'tensorflow::train',
+      parameters: {
+        trainer: trainer_config,
+        model: din_dcn_model,
+        train_dataset: 'ref::load_dataset.train',
+        valid_dataset: 'ref::load_dataset.valid',
+      },
+      outputs: ['model'],
+    },
+    {
+      name: 'test_model',
+      type: 'tensorflow::test',
+      parameters: {
+        model: 'ref::train_model.model',
+        dataset: 'ref::load_dataset.test',
+        save_result: true,
+        metrics: [{
+          type : "auc",
+          predict: 'label',
+          label:'label',
+          name:'auc_test'
+        }]
+      },
+    },
+    {
+      name: 'export_model',
+      type: 'tensorflow::export',
+      parameters: {
+        dataset: 'ref::load_dataset.test',
+        model: 'ref::train_model.model',
+        config: {
+          type: 'model',
+          save_path: '$data_dir/$scenName/$modelID/WiseRecModel/$period/outputs',
+        },
+      },
+    },
+  ],
+}
+
+
